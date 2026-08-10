@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "sentinel-vision"
 version = "0.0.1"
 description = "Visual world-state and event reasoning engine for industrial workspace monitoring and asset intelligence."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 readme = "README.md"
 dependencies = []
 
