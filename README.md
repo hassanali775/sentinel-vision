@@ -4,14 +4,17 @@ Visual world-state and event reasoning engine for industrial workspace monitorin
 
 ## Status
 
-**PR-001: Engineering Foundation.** This repository currently contains
-only the project skeleton — package structure, tooling configuration, CI,
-and the foundational architecture decision (see `docs/adr/0001-deterministic
--state-is-source-of-truth.md`). No detection, tracking, or reasoning code
-exists yet. Subpackages (`capture`, `perception`, `tracking`, etc.) are
-deliberately not scaffolded in advance — each is introduced in the PR that
-actually needs it, containing real code from the start rather than an
-empty placeholder.
+**PR-002: Data + Evaluation Strategy.** The engineering foundation is in
+place and this PR adds the frozen data contracts (`BoundingBox`,
+`Detection`, `FrameRef`, `GroundTruthAnnotation` in
+`src/sentinel_vision/data/contracts.py`) and detection-level evaluation
+(IoU and thresholded precision/recall in
+`src/sentinel_vision/evaluation/`). Tracking-level metrics are explicitly
+deferred until the tracker (PR-005) and persistent entity state (PR-006)
+exist; event-level evaluation waits for PR-011 — see
+`docs/adr/0002-data-and-evaluation-strategy.md`. The `data/` layout
+contract for benchmark clips and hand-labeled ground truth lives in
+`data/README.md`. No actual data or capture/tracking code exists yet.
 
 ## Roadmap
 
@@ -49,3 +52,4 @@ pytest
 ## Architecture Decisions
 
 - [ADR-0001: Deterministic State Is the Source of Truth](docs/adr/0001-deterministic-state-is-source-of-truth.md)
+- [ADR-0002: Data and Evaluation Strategy](docs/adr/0002-data-and-evaluation-strategy.md)
