@@ -15,6 +15,7 @@ positive dimensions.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 import numpy as np
@@ -32,6 +33,11 @@ class FrameData:
     ``image`` holds the raw pixel data as a (height, width, channels) uint8
     array. ``metadata`` carries optional runtime attributes (e.g. capture
     device id) and defaults to an empty mapping.
+
+    Immutability is enforced at runtime, not just by ``frozen=True``:
+    ``image`` is made read-only and ``metadata`` is wrapped in a read-only
+    ``MappingProxyType`` in ``__post_init__``, so neither field's contents
+    can be mutated in place after construction.
     """
 
     frame_id: int
@@ -59,6 +65,9 @@ class FrameData:
             raise ValueError(
                 f"image dimensions must be positive, got shape={self.image.shape}"
             )
+
+        self.image.flags.writeable = False
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FrameData):

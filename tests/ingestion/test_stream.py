@@ -123,6 +123,30 @@ class TestFrameData:
         assert a == b
         assert hash(a) == hash(b)
 
+    def test_image_is_not_writeable(self) -> None:
+        assert not make_frame().image.flags.writeable
+
+    def test_image_mutation_is_rejected(self) -> None:
+        frame = make_frame()
+        with pytest.raises(ValueError):
+            frame.image[:] = 0
+
+    def test_metadata_mutation_is_rejected(self) -> None:
+        frame = make_frame()
+        with pytest.raises(TypeError):
+            frame.metadata["x"] = 1  # type: ignore[index]
+
+    def test_metadata_is_a_read_only_mapping(self) -> None:
+        from types import MappingProxyType
+
+        assert isinstance(make_frame().metadata, MappingProxyType)
+
+    def test_external_dict_cannot_mutate_frame(self) -> None:
+        metadata = {"a": 1}
+        frame = make_frame(metadata=metadata)
+        metadata["b"] = 2
+        assert frame.metadata == {"a": 1}
+
 
 class TestStreamMetadata:
     def test_valid_metadata_constructs(self) -> None:
