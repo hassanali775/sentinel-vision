@@ -106,6 +106,23 @@ class TestFrameData:
     def test_frame_is_not_equal_to_non_frame(self) -> None:
         assert make_frame() != object()
 
+    def test_frame_data_is_hashable(self) -> None:
+        frame = make_frame()
+        assert hash(frame) == hash((frame.frame_id, frame.timestamp_ms))
+
+    def test_frame_data_usable_as_set_member_and_dict_key(self) -> None:
+        frame = make_frame(frame_id=1, timestamp_ms=33.333)
+        frame_set = {make_frame(frame_id=1, timestamp_ms=33.333), frame}
+        assert frame_set == {frame}
+        lookup = {frame: "value"}
+        assert lookup[make_frame(frame_id=1, timestamp_ms=33.333)] == "value"
+
+    def test_equal_frames_have_equal_hashes(self) -> None:
+        a = make_frame(frame_id=2, timestamp_ms=66.666)
+        b = make_frame(frame_id=2, timestamp_ms=66.666)
+        assert a == b
+        assert hash(a) == hash(b)
+
 
 class TestStreamMetadata:
     def test_valid_metadata_constructs(self) -> None:

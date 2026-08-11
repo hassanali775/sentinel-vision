@@ -70,6 +70,14 @@ class FrameData:
             and self.metadata == other.metadata
         )
 
+    def __hash__(self) -> int:
+        # Equality is array-aware (np.array_equal), so the dataclass cannot
+        # auto-generate __hash__ (eq=False + custom __eq__ makes instances
+        # unhashable by default). The numpy array is deliberately excluded:
+        # hash relies only on the scalar identity fields, which is consistent
+        # with __eq__ — equal frames always share (frame_id, timestamp_ms).
+        return hash((self.frame_id, self.timestamp_ms))
+
 
 @dataclass(frozen=True)
 class StreamMetadata:
