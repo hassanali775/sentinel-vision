@@ -14,6 +14,7 @@ import pytest
 from sentinel_vision.data.contracts import BoundingBox, FrameRef, GroundTruthAnnotation
 from sentinel_vision.detection.synthetic import SyntheticBoxDetector
 from sentinel_vision.evaluation.detection_metrics import precision_recall_at_iou
+from sentinel_vision.ingestion.contracts import FrameData
 from sentinel_vision.ingestion.stream import SyntheticFrameStream
 
 GROUND_TRUTH_LABEL = "synthetic_target"
@@ -47,7 +48,7 @@ def expected_object_box(stream: SyntheticFrameStream, frame_id: int) -> Bounding
     )
 
 
-def ground_truth_for(frame, box: BoundingBox) -> GroundTruthAnnotation:
+def ground_truth_for(frame: FrameData, box: BoundingBox) -> GroundTruthAnnotation:
     return GroundTruthAnnotation(
         frame=FrameRef(
             source_id="synthetic-stream",

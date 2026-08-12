@@ -36,9 +36,13 @@ class FrameData:
     device id) and defaults to an empty mapping.
 
     Immutability is enforced at runtime, not just by ``frozen=True``:
-    ``image`` is made read-only and ``metadata`` is wrapped in a read-only
+    ``image`` is defensively copied on construction and then made
+    read-only, and ``metadata`` is wrapped in a read-only
     ``MappingProxyType`` in ``__post_init__``, so neither field's contents
-    can be mutated in place after construction.
+    can be mutated in place after construction — including through a buffer
+    the caller still holds. The copy is a one-time memory/CPU cost per
+    frame, acceptable for determinism; it can be profiled and removed in a
+    future optimization PR if the hot path ever demands it.
     """
 
     frame_id: int
@@ -67,6 +71,7 @@ class FrameData:
                 f"image dimensions must be positive, got shape={self.image.shape}"
             )
 
+        object.__setattr__(self, "image", np.array(self.image, copy=True))
         self.image.flags.writeable = False
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 

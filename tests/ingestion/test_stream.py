@@ -147,6 +147,13 @@ class TestFrameData:
         metadata["b"] = 2
         assert frame.metadata == {"a": 1}
 
+    def test_external_array_mutation_cannot_affect_frame(self) -> None:
+        image = make_image()
+        original = image.copy()
+        frame = make_frame(image=image)
+        image[:] = 255
+        assert np.array_equal(frame.image, original)
+
 
 class TestStreamMetadata:
     def test_valid_metadata_constructs(self) -> None:
