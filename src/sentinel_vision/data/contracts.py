@@ -1,10 +1,10 @@
 """Frozen data contracts shared across the deterministic pipeline.
 
 These dataclasses are the vocabulary between dataset curation, the detection
-abstraction (PR-004), and the evaluation layer. Every one of them describes a
-fact about a specific frame — what was annotated there, what was predicted
-there — so they are frozen: nothing in the pipeline is allowed to mutate a
-frame's facts after the fact.
+abstraction (PR-004), the tracking layer (PR-005), and the evaluation layer.
+Every one of them describes a fact about a specific frame — what was
+annotated there, what was predicted there — so they are frozen: nothing in
+the pipeline is allowed to mutate a frame's facts after the fact.
 
 Validation happens in ``__post_init__`` for the fields where a malformed
 value is a data-quality bug, not a value to silently accept: a degenerate
@@ -55,6 +55,25 @@ class Detection:
             raise ValueError(
                 f"confidence ({self.confidence}) must be within [0.0, 1.0]"
             )
+
+
+@dataclass(frozen=True)
+class TrackedDetection:
+    """A detection associated with a persistent track across frames.
+
+    Produced by the tracking layer (PR-005): the tracker consumes
+    ``Detection`` objects and tags each with the stable ``track_id`` of the
+    object it was associated with. A ``-1`` track id is never valid here —
+    unlike ``GroundTruthAnnotation``, which uses ``-1`` to mean "no identity
+    recorded", a tracked detection always carries an identity.
+    """
+
+    detection: Detection
+    track_id: int
+
+    def __post_init__(self) -> None:
+        if self.track_id < 0:
+            raise ValueError(f"track_id ({self.track_id}) must be non-negative")
 
 
 @dataclass(frozen=True)

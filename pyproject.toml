@@ -35,3 +35,7 @@ packages = ["sentinel_vision"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--import-mode=importlib"
+# Test dirs are flat (no __init__.py); importlib mode lets test files that
+# share a basename across directories (e.g. tracking/test_base.py vs
+# detection/test_base.py) be collected without module-name collisions.

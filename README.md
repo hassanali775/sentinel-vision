@@ -4,16 +4,16 @@ Visual world-state and event reasoning engine for industrial workspace monitorin
 
 ## Status
 
-**PR-004: Detection Abstraction.** PR-001 through PR-003 are in place
-(deterministic pipeline foundation, frozen data contracts, detection-level
-evaluation, frame ingestion). This PR adds the detection boundary:
-`BaseDetector` — a single-method interface that turns one `FrameData` into
-a list of `Detection` objects — plus `SyntheticBoxDetector`, a NumPy-only
-threshold detector that finds the synthetic stream's moving object by its
-pixels. The integration test closes PR-002's loop: independent ground
-truth + pixel-derived predictions + precision/recall all agree. No real ML
-model, tracking, or GPU inference exists yet — see
-`docs/adr/0004-detection-abstraction.md`.
+**PR-005: Tracker Abstraction & Evaluation Harness.** PR-001 through PR-004
+are in place (deterministic pipeline foundation, frozen data contracts,
+detection-level evaluation, frame ingestion, detection abstraction). This
+PR adds the tracking boundary: `BaseTracker` — a stateful single-method
+interface that associates each frame's detections into tracks — plus
+`GreedyIoUTracker`, a frame-to-frame greedy IoU baseline, and the tracking
+evaluation harness (`calculate_mota`, `calculate_idf1`). The integration
+test closes the loop stream -> detect -> track -> evaluate with perfect
+MOTA/IDF1. Occlusion reasoning and re-identification are deferred — see
+`docs/adr/0005-tracker-and-evaluation-harness.md`.
 
 ## Roadmap
 
@@ -54,3 +54,4 @@ pytest
 - [ADR-0002: Data and Evaluation Strategy](docs/adr/0002-data-and-evaluation-strategy.md)
 - [ADR-0003: Video Ingestion and Streaming](docs/adr/0003-video-ingestion-and-streaming.md)
 - [ADR-0004: Detection Abstraction](docs/adr/0004-detection-abstraction.md)
+- [ADR-0005: Tracker and Evaluation Harness](docs/adr/0005-tracker-and-evaluation-harness.md)

@@ -10,6 +10,7 @@ __all__ = [
     "Detection",
     "FrameRef",
     "GroundTruthAnnotation",
+    "TrackedDetection",
 ]
 
 from sentinel_vision.data.contracts import (
@@ -17,4 +18,5 @@ from sentinel_vision.data.contracts import (
     Detection,
     FrameRef,
     GroundTruthAnnotation,
+    TrackedDetection,
 )
