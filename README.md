@@ -4,16 +4,12 @@ Visual world-state and event reasoning engine for industrial workspace monitorin
 
 ## Status
 
-**PR-005: Tracker Abstraction & Evaluation Harness.** PR-001 through PR-004
+**PR-006: Persistent Entity State & Occlusion Management.** PR-001 through PR-005
 are in place (deterministic pipeline foundation, frozen data contracts,
-detection-level evaluation, frame ingestion, detection abstraction). This
-PR adds the tracking boundary: `BaseTracker` — a stateful single-method
-interface that associates each frame's detections into tracks — plus
-`GreedyIoUTracker`, a frame-to-frame greedy IoU baseline, and the tracking
-evaluation harness (`calculate_mota`, `calculate_idf1`). The integration
-test closes the loop stream -> detect -> track -> evaluate with perfect
-MOTA/IDF1. Occlusion reasoning and re-identification are deferred — see
-`docs/adr/0005-tracker-and-evaluation-harness.md`.
+detection-level evaluation, frame ingestion, detection abstraction, tracking layer).
+This PR adds persistent entity lifecycle management: `PersistentEntityTracker` — wrapping
+raw track outputs into a 5-state lifecycle (`VISIBLE`, `OCCLUDED`, `PREDICTED`, `LOST`, `RETIRED`)
+with linear extrapolation and memory-bounded purging — see `docs/adr/0006-persistent-entity-state.md`.
 
 ## Roadmap
 
@@ -55,3 +51,5 @@ pytest
 - [ADR-0003: Video Ingestion and Streaming](docs/adr/0003-video-ingestion-and-streaming.md)
 - [ADR-0004: Detection Abstraction](docs/adr/0004-detection-abstraction.md)
 - [ADR-0005: Tracker and Evaluation Harness](docs/adr/0005-tracker-and-evaluation-harness.md)
+- [ADR-0006: Persistent Entity State](docs/adr/0006-persistent-entity-state.md)
+
