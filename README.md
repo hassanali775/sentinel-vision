@@ -4,18 +4,16 @@ Visual world-state and event reasoning engine for industrial workspace monitorin
 
 ## Status
 
-**PR-003: Video Frame Ingestion & Synthetic Stream Pipeline.** PR-001 and
-PR-002 are in place (deterministic pipeline foundation, frozen data
-contracts, detection-level evaluation). This PR adds the ingestion
-boundary: immutable `FrameData`/`StreamMetadata` contracts and a
-`BaseFrameProvider` protocol (iterator + context manager) in
-`src/sentinel_vision/ingestion/`, plus `SyntheticFrameStream` — a
-deterministic, NumPy-only frame generator used for tests and CI so no video
-files or hardware are required. Timestamps are zero-based relative
-milliseconds (`frame_id * (1000.0 / fps)`), never wall-clock — see
-`docs/adr/0003-video-ingestion-and-streaming.md`. The `data/` layout
-contract for benchmark clips and hand-labeled ground truth lives in
-`data/README.md`. No real capture or tracking code exists yet.
+**PR-004: Detection Abstraction.** PR-001 through PR-003 are in place
+(deterministic pipeline foundation, frozen data contracts, detection-level
+evaluation, frame ingestion). This PR adds the detection boundary:
+`BaseDetector` — a single-method interface that turns one `FrameData` into
+a list of `Detection` objects — plus `SyntheticBoxDetector`, a NumPy-only
+threshold detector that finds the synthetic stream's moving object by its
+pixels. The integration test closes PR-002's loop: independent ground
+truth + pixel-derived predictions + precision/recall all agree. No real ML
+model, tracking, or GPU inference exists yet — see
+`docs/adr/0004-detection-abstraction.md`.
 
 ## Roadmap
 
@@ -55,3 +53,4 @@ pytest
 - [ADR-0001: Deterministic State Is the Source of Truth](docs/adr/0001-deterministic-state-is-source-of-truth.md)
 - [ADR-0002: Data and Evaluation Strategy](docs/adr/0002-data-and-evaluation-strategy.md)
 - [ADR-0003: Video Ingestion and Streaming](docs/adr/0003-video-ingestion-and-streaming.md)
+- [ADR-0004: Detection Abstraction](docs/adr/0004-detection-abstraction.md)
