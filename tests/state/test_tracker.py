@@ -223,3 +223,32 @@ class TestPersistentEntityTracker:
         assert obs2[0].state == EntityState.VISIBLE
         assert obs2[1].entity_id == 1
         assert obs2[1].state == EntityState.PREDICTED
+
+    def test_velocity_after_reappearance_uses_actual_frame_gap_not_assumed_unit_spacing(
+        self,
+    ) -> None:
+        tracker = PersistentEntityTracker(
+            occlusion_budget=1, prediction_budget=3, retirement_budget=5
+        )
+        # Observe at frame 0 (0,0,10,10) and frame 1 (2,0,12,10) -> velocity 2/frame
+        tracker.update(0, [tracked(0, 0, 10, 10, track_id=0)])
+        tracker.update(1, [tracked(2, 0, 12, 10, track_id=0)])
+
+        # Miss at frame 2 (OCCLUDED)
+        obs2 = tracker.update(2, [])
+        assert obs2[0].state == EntityState.OCCLUDED
+
+        # Reappear at frame 3 (10,0,20,10) -> 2 real frames gap from frame 1
+        obs3 = tracker.update(3, [tracked(10, 0, 20, 10, track_id=0)])
+        assert obs3[0].state == EntityState.VISIBLE
+
+        # Miss at frame 4 (OCCLUDED)
+        obs4 = tracker.update(4, [])
+        assert obs4[0].state == EntityState.OCCLUDED
+
+        # Miss at frame 5 (PREDICTED, steps=1)
+        # Expected box is (14.0, 0.0, 24.0, 10.0) based on frame_delta = 2 (velocity 4/frame)
+        obs5 = tracker.update(5, [])
+        assert obs5[0].state == EntityState.PREDICTED
+        assert obs5[0].bounding_box == box(14.0, 0.0, 24.0, 10.0)
+

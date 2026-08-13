@@ -20,6 +20,8 @@ class _EntityRecord:
     current_state: EntityState
     last_observed_box: BoundingBox
     second_to_last_observed_box: BoundingBox | None
+    last_observed_frame_id: int
+    second_to_last_observed_frame_id: int | None
     frames_since_last_match: int
     source_track_id: int
     class_label: str
@@ -96,6 +98,8 @@ class PersistentEntityTracker:
                 rec.frames_since_last_match = 0
                 rec.second_to_last_observed_box = rec.last_observed_box
                 rec.last_observed_box = td.detection.bounding_box
+                rec.second_to_last_observed_frame_id = rec.last_observed_frame_id
+                rec.last_observed_frame_id = frame_id
                 rec.class_label = td.detection.class_label
                 matched_entity_ids.add(entity_id)
                 observations.append(
@@ -115,6 +119,8 @@ class PersistentEntityTracker:
                     current_state=EntityState.VISIBLE,
                     last_observed_box=td.detection.bounding_box,
                     second_to_last_observed_box=None,
+                    last_observed_frame_id=frame_id,
+                    second_to_last_observed_frame_id=None,
                     frames_since_last_match=0,
                     source_track_id=source_track_id,
                     class_label=td.detection.class_label,
@@ -153,20 +159,30 @@ class PersistentEntityTracker:
                 )
             elif k <= self._prediction_budget:
                 rec.current_state = EntityState.PREDICTED
-                if rec.second_to_last_observed_box is not None:
+                if (
+                    rec.second_to_last_observed_box is not None
+                    and rec.second_to_last_observed_frame_id is not None
+                ):
                     steps = k - self._occlusion_budget
-                    last = rec.last_observed_box
-                    prev = rec.second_to_last_observed_box
-                    dx_min = last.x_min - prev.x_min
-                    dy_min = last.y_min - prev.y_min
-                    dx_max = last.x_max - prev.x_max
-                    dy_max = last.y_max - prev.y_max
-                    box = BoundingBox(
-                        x_min=last.x_min + steps * dx_min,
-                        y_min=last.y_min + steps * dy_min,
-                        x_max=last.x_max + steps * dx_max,
-                        y_max=last.y_max + steps * dy_max,
+                    frame_delta = (
+                        rec.last_observed_frame_id
+                        - rec.second_to_last_observed_frame_id
                     )
+                    if frame_delta > 0:
+                        last = rec.last_observed_box
+                        prev = rec.second_to_last_observed_box
+                        dx_min = (last.x_min - prev.x_min) / frame_delta
+                        dy_min = (last.y_min - prev.y_min) / frame_delta
+                        dx_max = (last.x_max - prev.x_max) / frame_delta
+                        dy_max = (last.y_max - prev.y_max) / frame_delta
+                        box = BoundingBox(
+                            x_min=last.x_min + steps * dx_min,
+                            y_min=last.y_min + steps * dy_min,
+                            x_max=last.x_max + steps * dx_max,
+                            y_max=last.y_max + steps * dy_max,
+                        )
+                    else:
+                        box = rec.last_observed_box
                 else:
                     # Fallback: only one observed position exists, hold last known box
                     box = rec.last_observed_box

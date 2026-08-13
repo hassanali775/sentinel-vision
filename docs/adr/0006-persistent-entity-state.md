@@ -21,7 +21,7 @@ PR-006 introduces `PersistentEntityTracker` and the frozen `EntityObservation` c
 - **`PREDICTED`**: Unobserved for $\text{occlusion\_budget} < k \le \text{prediction\_budget}$ frames. `bounding_box` is linearly extrapolated using per-frame velocity $(box_{t-1} - box_{t-2})$.
   - *Single-observation fallback*: If only one observed position exists before occlusion (no velocity history), extrapolation falls back to holding the last known box.
 - **`LOST`**: Unobserved for $\text{prediction\_budget} < k \le \text{retirement\_budget}$ frames. `bounding_box` is strictly `None`.
-- **`RETIRED`**: Terminal state when unobserved frames $k > \text{retirement\_budget}$. Emits a final `RETIRED` observation (with last known box) once, then the entity is purged from internal memory.
+- **`RETIRED`**: Terminal state when unobserved frames $k > \text{retirement\_budget}$. Emits a final `RETIRED` observation (with last known box) once, then the entity is purged from internal memory. Unlike the LOST state (which enforces bounding_box = None to signify active positional uncertainty), a RETIRED entity observation explicitly retains its last known bounding box to preserve a definitive spatial terminal anchor for downstream audit trail loggers (PR-010) and forensic visualizers.
 
 ### 2. Tracker-Composition Contract and Upstream `max_age` Bound
 
