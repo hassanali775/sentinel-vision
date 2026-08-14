@@ -11,7 +11,12 @@ import numpy as np
 import pytest
 
 from sentinel_vision.ingestion.contracts import FrameData, StreamMetadata
-from sentinel_vision.ingestion.stream import BaseFrameProvider, SyntheticFrameStream
+from sentinel_vision.ingestion.stream import (
+    BaseFrameProvider,
+    MultiObjectSyntheticFrameStream,
+    SyntheticFrameStream,
+    SyntheticObjectConfig,
+)
 
 
 def make_image(height: int = 4, width: int = 6) -> np.ndarray:
@@ -381,3 +386,45 @@ class TestSyntheticFrameStream:
         assert frames[0].frame_id == 0
         assert frames[0].timestamp_ms == 0.0
         assert frames[0].image.shape == (32, 32, 3)
+
+
+class TestMultiObjectSyntheticFrameStream:
+    def test_multi_object_stream_construction(self) -> None:
+        stream = MultiObjectSyntheticFrameStream(num_objects=3)
+        assert stream.metadata.total_frames == 100
+
+    def test_multi_object_stream_renders_multiple_objects(self) -> None:
+        stream = MultiObjectSyntheticFrameStream(width=128, height=96, num_objects=2, num_frames=5)
+        frames = list(stream)
+        assert len(frames) == 5
+        # Frame should have pixel data in different row regions for independent trajectories
+        frame0 = frames[0]
+        assert np.any(frame0.image > 0)
+
+    def test_custom_objects_rendering_and_active_frames(self) -> None:
+        obj0 = SyntheticObjectConfig(
+            start_x=5.0, start_y=5.0, velocity_x=1.0, width=5, height=5, active_frames={0, 1}
+        )
+        obj1 = SyntheticObjectConfig(
+            start_x=50.0, start_y=50.0, velocity_x=1.0, width=5, height=5, active_frames={1, 2}
+        )
+        stream = MultiObjectSyntheticFrameStream(
+            width=100, height=100, num_frames=3, objects=[obj0, obj1]
+        )
+        frames = list(stream)
+        # Frame 0: obj0 visible, obj1 not visible
+        assert np.any(frames[0].image[5:10, 5:10] > 0)
+        assert np.all(frames[0].image[50:55, 50:55] == 0)
+
+        # Frame 1: both obj0 and obj1 visible
+        assert np.any(frames[1].image[5:10, 6:11] > 0)
+        assert np.any(frames[1].image[50:55, 51:56] > 0)
+
+        # Frame 2: obj0 not visible, obj1 visible
+        assert np.all(frames[2].image[5:10, 7:12] == 0)
+        assert np.any(frames[2].image[50:55, 52:57] > 0)
+
+    def test_rejects_zero_num_objects(self) -> None:
+        with pytest.raises(ValueError, match="num_objects"):
+            MultiObjectSyntheticFrameStream(num_objects=0)
+

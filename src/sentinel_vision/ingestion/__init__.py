@@ -11,9 +11,17 @@ __all__ = [
     "BaseFrameProvider",
     "FrameData",
     "ImageArray",
+    "MultiObjectSyntheticFrameStream",
     "StreamMetadata",
     "SyntheticFrameStream",
+    "SyntheticObjectConfig",
 ]
 
 from sentinel_vision.ingestion.contracts import FrameData, ImageArray, StreamMetadata
-from sentinel_vision.ingestion.stream import BaseFrameProvider, SyntheticFrameStream
+from sentinel_vision.ingestion.stream import (
+    BaseFrameProvider,
+    MultiObjectSyntheticFrameStream,
+    SyntheticFrameStream,
+    SyntheticObjectConfig,
+)
+

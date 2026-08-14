@@ -1,9 +1,9 @@
-"""Persistent entity tracker for stateful entity lifecycle management (PR-006).
+"""Persistent entity tracker for stateful entity lifecycle management (PR-006, PR-007).
 
 This module implements ``PersistentEntityTracker``, wrapping raw frame-level
 track outputs (``TrackedDetection`` from PR-005) into persistent entity
 observations with a 5-state lifecycle (VISIBLE -> OCCLUDED -> PREDICTED ->
-LOST -> RETIRED).
+LOST -> RETIRED) and optional spatial re-identification (PR-007).
 """
 
 from __future__ import annotations
@@ -11,6 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sentinel_vision.data.contracts import BoundingBox, TrackedDetection
+from sentinel_vision.reidentification.spatial import (
+    ReidentificationCandidate,
+    SpatialReidentifier,
+)
 from sentinel_vision.state.entity import EntityObservation, EntityState
 
 
@@ -44,6 +48,13 @@ class PersistentEntityTracker:
       is LOST (bounding box is None). Beyond this threshold, the entity transitions
       to RETIRED, emits a final RETIRED observation, and is purged from internal state.
 
+    Re-identification (PR-007):
+    - When ``reidentifier`` is provided, retired entities are added to the candidate
+      retention pool upon retirement. When an unmatched track arrives, the tracker
+      queries the retention pool before minting a brand-new entity ID; if a candidate
+      matches spatial trajectory prediction, the track is re-linked to the candidate's
+      original entity ID.
+
     Validation:
     Budgets must satisfy ``0 <= occlusion_budget <= prediction_budget <= retirement_budget``.
     An inverted or negative ordering raises a ``ValueError``.
@@ -54,6 +65,7 @@ class PersistentEntityTracker:
         occlusion_budget: int = 1,
         prediction_budget: int = 3,
         retirement_budget: int = 5,
+        reidentifier: SpatialReidentifier | None = None,
     ) -> None:
         if occlusion_budget < 0 or prediction_budget < 0 or retirement_budget < 0:
             raise ValueError("All budgets must be non-negative")
@@ -67,6 +79,7 @@ class PersistentEntityTracker:
         self._occlusion_budget = occlusion_budget
         self._prediction_budget = prediction_budget
         self._retirement_budget = retirement_budget
+        self._reidentifier = reidentifier
 
         self._entities: dict[int, _EntityRecord] = {}
         self._next_entity_id = 0
@@ -81,6 +94,9 @@ class PersistentEntityTracker:
         """
         if frame_id < 0:
             raise ValueError(f"frame_id ({frame_id}) must be non-negative")
+
+        if self._reidentifier is not None:
+            self._reidentifier.purge_expired(frame_id)
 
         matched_entity_ids: set[int] = set()
         observations: list[EntityObservation] = []
@@ -112,19 +128,38 @@ class PersistentEntityTracker:
                     )
                 )
             else:
-                entity_id = self._next_entity_id
-                self._next_entity_id += 1
-                rec = _EntityRecord(
-                    entity_id=entity_id,
-                    current_state=EntityState.VISIBLE,
-                    last_observed_box=td.detection.bounding_box,
-                    second_to_last_observed_box=None,
-                    last_observed_frame_id=frame_id,
-                    second_to_last_observed_frame_id=None,
-                    frames_since_last_match=0,
-                    source_track_id=source_track_id,
-                    class_label=td.detection.class_label,
+                reid_candidate = (
+                    self._reidentifier.match(td.detection, frame_id)
+                    if self._reidentifier is not None
+                    else None
                 )
+                if reid_candidate is not None:
+                    entity_id = reid_candidate.entity_id
+                    rec = _EntityRecord(
+                        entity_id=entity_id,
+                        current_state=EntityState.VISIBLE,
+                        last_observed_box=td.detection.bounding_box,
+                        second_to_last_observed_box=reid_candidate.last_known_box,
+                        last_observed_frame_id=frame_id,
+                        second_to_last_observed_frame_id=reid_candidate.last_observed_frame_id,
+                        frames_since_last_match=0,
+                        source_track_id=source_track_id,
+                        class_label=td.detection.class_label,
+                    )
+                else:
+                    entity_id = self._next_entity_id
+                    self._next_entity_id += 1
+                    rec = _EntityRecord(
+                        entity_id=entity_id,
+                        current_state=EntityState.VISIBLE,
+                        last_observed_box=td.detection.bounding_box,
+                        second_to_last_observed_box=None,
+                        last_observed_frame_id=frame_id,
+                        second_to_last_observed_frame_id=None,
+                        frames_since_last_match=0,
+                        source_track_id=source_track_id,
+                        class_label=td.detection.class_label,
+                    )
                 self._entities[entity_id] = rec
                 matched_entity_ids.add(entity_id)
                 track_to_entity[source_track_id] = entity_id
@@ -219,6 +254,40 @@ class PersistentEntityTracker:
                         frame_id=frame_id,
                     )
                 )
+                if self._reidentifier is not None:
+                    if (
+                        rec.second_to_last_observed_box is not None
+                        and rec.second_to_last_observed_frame_id is not None
+                    ):
+                        frame_delta = (
+                            rec.last_observed_frame_id
+                            - rec.second_to_last_observed_frame_id
+                        )
+                        if frame_delta > 0:
+                            last = rec.last_observed_box
+                            prev = rec.second_to_last_observed_box
+                            velocity = (
+                                (last.x_min - prev.x_min) / frame_delta,
+                                (last.y_min - prev.y_min) / frame_delta,
+                                (last.x_max - prev.x_max) / frame_delta,
+                                (last.y_max - prev.y_max) / frame_delta,
+                            )
+                        else:
+                            velocity = (0.0, 0.0, 0.0, 0.0)
+                    else:
+                        velocity = (0.0, 0.0, 0.0, 0.0)
+
+                    candidate = ReidentificationCandidate(
+                        entity_id=entity_id,
+                        last_known_box=box,
+                        velocity=velocity,
+                        retired_frame_id=frame_id,
+                        last_observed_frame_id=rec.last_observed_frame_id,
+                        class_label=rec.class_label,
+                    )
+                    self._reidentifier.add_candidate(candidate)
+
                 del self._entities[entity_id]
 
         return sorted(observations, key=lambda obs: obs.entity_id)
+
