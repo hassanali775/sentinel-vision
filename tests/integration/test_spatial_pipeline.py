@@ -62,6 +62,7 @@ class TestSpatialPipeline:
         # entity 0. Its detected box center is (15 + 2*frame, 15).
         # center_x crosses x=30 between frame 7 (29) and frame 8 (31), and
         # crosses x=70 between frame 27 (69) and frame 28 (71).
+        assert all_observations[0][0].bounding_box.y_min == pytest.approx(10.0)
         lane_a = Zone(
             name="lane_a",
             vertices=[(30.0, 0.0), (70.0, 0.0), (70.0, 40.0), (30.0, 40.0)],
