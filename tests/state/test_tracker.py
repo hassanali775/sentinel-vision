@@ -8,6 +8,7 @@ RETIRED terminal purging, reappearance resets, and independent multi-entity life
 import pytest
 
 from sentinel_vision.data.contracts import BoundingBox, Detection, TrackedDetection
+from sentinel_vision.reidentification.spatial import SpatialReidentifier
 from sentinel_vision.state.entity import EntityState
 from sentinel_vision.state.tracker import PersistentEntityTracker
 
@@ -251,4 +252,103 @@ class TestPersistentEntityTracker:
         obs5 = tracker.update(5, [])
         assert obs5[0].state == EntityState.PREDICTED
         assert obs5[0].bounding_box == box(14.0, 0.0, 24.0, 10.0)
+
+
+class TestRetiredCandidateCadenceAndVelocity:
+    """Regression tests for PR-007 code review feedback.
+
+    Locks in two guarantees:
+    1. ``SpatialReidentifier.purge_expired`` runs unconditionally on every
+       ``PersistentEntityTracker.update`` frame, even when every detection is
+       matched and no unmatched track reaches the re-identification pool.
+    2. ``ReidentificationCandidate`` velocity created at the ``RETIRED``
+       transition uses exact frame-delta normalization
+       ``(last_box - second_to_last_box) / (last_frame - second_to_last_frame)``
+       with a zero/static fallback when fewer than two observations exist.
+    """
+
+    def _tracker(
+        self, retention_window: int
+    ) -> tuple[PersistentEntityTracker, SpatialReidentifier]:
+        reidentifier = SpatialReidentifier(
+            retention_window=retention_window, max_distance=50.0
+        )
+        tracker = PersistentEntityTracker(
+            occlusion_budget=0,
+            prediction_budget=1,
+            retirement_budget=1,
+            reidentifier=reidentifier,
+        )
+        return tracker, reidentifier
+
+    def test_purge_expired_runs_every_frame_even_with_no_unmatched_tracks(
+        self,
+    ) -> None:
+        """Candidates expire on cadence even when every frame's detections match.
+
+        Entity 0 retires at frame 2 and enters the pool. Frames 3-5 carry only
+        entity 1's track, so every detection matches an existing entity — there
+        is no unmatched track to trigger re-identification. The candidate must
+        still be purged exactly at ``retired_frame_id + retention_window``.
+        """
+        tracker, reidentifier = self._tracker(retention_window=2)
+
+        tracker.update(0, [tracked(0, 0, 10, 10, track_id=0), tracked(50, 50, 60, 60, track_id=1)])
+        tracker.update(1, [tracked(50, 50, 60, 60, track_id=1)])
+        # Entity 0's second miss (k=2 > retirement_budget=1) -> RETIRED, candidate added
+        tracker.update(2, [tracked(50, 50, 60, 60, track_id=1)])
+        assert len(reidentifier.candidates) == 1
+        assert reidentifier.candidates[0].entity_id == 0
+        assert reidentifier.candidates[0].retired_frame_id == 2
+
+        # Frames 3 and 4: all detections matched, no unmatched tracks.
+        # Purge still runs; age = frame - 2 <= retention_window (2) keeps candidate.
+        tracker.update(3, [tracked(50, 50, 60, 60, track_id=1)])
+        assert len(reidentifier.candidates) == 1
+        tracker.update(4, [tracked(50, 50, 60, 60, track_id=1)])
+        assert len(reidentifier.candidates) == 1
+
+        # Frame 5: age = 5 - 2 = 3 > retention_window (2) -> purged despite no
+        # unmatched tracks ever touching the pool on these frames.
+        tracker.update(5, [tracked(50, 50, 60, 60, track_id=1)])
+        assert len(reidentifier.candidates) == 0
+
+    def test_retired_candidate_velocity_uses_exact_frame_delta_normalization(
+        self,
+    ) -> None:
+        """Candidate velocity divides displacement by the real frame gap, not 1.
+
+        Entity is observed at frame 0 (0,0,10,10) and frame 2 (4,0,14,10): a
+        frame_delta of 2, so per-frame velocity is (2.0, 0.0, 2.0, 0.0) rather
+        than the raw displacement (4.0, 0.0, 4.0, 0.0).
+        """
+        tracker, reidentifier = self._tracker(retention_window=10)
+
+        tracker.update(0, [tracked(0, 0, 10, 10, track_id=0)])
+        tracker.update(2, [tracked(4, 0, 14, 10, track_id=0)])
+        tracker.update(3, [])
+        tracker.update(4, [])
+        tracker.update(5, [])
+
+        assert len(reidentifier.candidates) == 1
+        candidate = reidentifier.candidates[0]
+        assert candidate.last_observed_frame_id == 2
+        assert candidate.retired_frame_id == 4
+        assert candidate.last_known_box == box(4, 0, 14, 10)
+        assert candidate.velocity == (2.0, 0.0, 2.0, 0.0)
+
+    def test_retired_candidate_velocity_falls_back_to_zero_with_single_observation(
+        self,
+    ) -> None:
+        """A candidate with only one observed position gets static velocity."""
+        tracker, reidentifier = self._tracker(retention_window=10)
+
+        tracker.update(0, [tracked(5, 5, 15, 15, track_id=0)])
+        tracker.update(1, [])
+        tracker.update(2, [])
+        tracker.update(3, [])
+
+        assert len(reidentifier.candidates) == 1
+        assert reidentifier.candidates[0].velocity == (0.0, 0.0, 0.0, 0.0)
+
 

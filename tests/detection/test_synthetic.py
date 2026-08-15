@@ -1,9 +1,10 @@
-"""Tests for the synthetic threshold detector (PR-004).
+"""Tests for the synthetic threshold detector (PR-004, PR-007).
 
 Covers the empty-frame contract (zero detections, never an error), a
 hand-computed single-object box, the fixed confidence and class label, the
-enclosing-box simplification for disjoint regions, and the guarantee that
-detecting never mutates the input frame.
+enclosing-box simplification for disjoint regions, multi-instance connected
+component extraction (PR-007), and the guarantee that detecting never mutates
+the input frame.
 """
 
 import numpy as np
@@ -62,6 +63,32 @@ class TestSyntheticBoxDetector:
         detections = SyntheticBoxDetector().detect(make_frame(image))
         assert len(detections) == 1
         assert detections[0].bounding_box == BoundingBox(2.0, 1.0, 9.0, 8.0)
+
+    def test_multi_instance_extracts_disjoint_components_as_separate_boxes(
+        self,
+    ) -> None:
+        # Two disjoint blocks: (rows 1, cols 2) and (rows 6..7, cols 7..8).
+        # In multi-instance mode these become two detections, sorted by
+        # (y_min, x_min): (2.0, 1.0, 3.0, 2.0) then (7.0, 6.0, 9.0, 8.0).
+        image = make_blank_image()
+        image[1:2, 2:3] = 255
+        image[6:8, 7:9] = 255
+        detections = SyntheticBoxDetector(multi_instance=True).detect(make_frame(image))
+        assert len(detections) == 2
+        assert detections[0].bounding_box == BoundingBox(2.0, 1.0, 3.0, 2.0)
+        assert detections[1].bounding_box == BoundingBox(7.0, 6.0, 9.0, 8.0)
+
+    def test_multi_instance_merges_diagonal_neighbors_into_one_component(
+        self,
+    ) -> None:
+        # Two pixels touching only diagonally (2,2) and (3,3): 8-connectivity
+        # treats them as one connected component -> one enclosing box.
+        image = make_blank_image()
+        image[2, 2] = 255
+        image[3, 3] = 255
+        detections = SyntheticBoxDetector(multi_instance=True).detect(make_frame(image))
+        assert len(detections) == 1
+        assert detections[0].bounding_box == BoundingBox(2.0, 2.0, 4.0, 4.0)
 
     def test_detect_does_not_mutate_input_frame(self) -> None:
         image = make_blank_image()
