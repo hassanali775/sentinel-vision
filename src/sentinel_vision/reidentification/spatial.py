@@ -52,18 +52,38 @@ class ReidentificationCandidate:
             )
 
     def predict_box(self, frame_id: int) -> BoundingBox:
-        """Linearly extrapolate bounding box to ``frame_id`` using velocity."""
+        """Linearly extrapolate bounding box to ``frame_id`` using velocity.
+
+        The projection is clamped so the predicted box can never degenerate:
+        if extrapolating a large frame gap amplifies a per-edge velocity
+        difference enough to invert an axis, the box is re-centered on the
+        extrapolated midpoint while keeping the last known size on that axis
+        (observed on real video where detections arrive sparsely).
+        """
         if frame_id < self.retired_frame_id:
             raise ValueError(
                 f"frame_id ({frame_id}) cannot be before retired_frame_id ({self.retired_frame_id})"
             )
         elapsed = frame_id - self.last_observed_frame_id
         dx_min, dy_min, dx_max, dy_max = self.velocity
+        last = self.last_known_box
+        pred_x_min = last.x_min + elapsed * dx_min
+        pred_x_max = last.x_max + elapsed * dx_max
+        pred_y_min = last.y_min + elapsed * dy_min
+        pred_y_max = last.y_max + elapsed * dy_max
+        if pred_x_min >= pred_x_max:
+            mid_x = (pred_x_min + pred_x_max) / 2.0
+            half_width = (last.x_max - last.x_min) / 2.0
+            pred_x_min, pred_x_max = mid_x - half_width, mid_x + half_width
+        if pred_y_min >= pred_y_max:
+            mid_y = (pred_y_min + pred_y_max) / 2.0
+            half_height = (last.y_max - last.y_min) / 2.0
+            pred_y_min, pred_y_max = mid_y - half_height, mid_y + half_height
         return BoundingBox(
-            x_min=self.last_known_box.x_min + elapsed * dx_min,
-            y_min=self.last_known_box.y_min + elapsed * dy_min,
-            x_max=self.last_known_box.x_max + elapsed * dx_max,
-            y_max=self.last_known_box.y_max + elapsed * dy_max,
+            x_min=pred_x_min,
+            y_min=pred_y_min,
+            x_max=pred_x_max,
+            y_max=pred_y_max,
         )
 
 

@@ -102,6 +102,22 @@ class TestReidentificationCandidate:
         with pytest.raises(ValueError, match="cannot be before"):
             cand.predict_box(4)
 
+    def test_predict_box_clamps_axes_that_would_invert(self) -> None:
+        cand = ReidentificationCandidate(
+            entity_id=1,
+            last_known_box=BoundingBox(10.0, 10.0, 20.0, 20.0),
+            velocity=(2.0, 1.0, -2.0, 1.0),
+            retired_frame_id=5,
+            last_observed_frame_id=5,
+            class_label="synthetic_target",
+        )
+        # Raw projection at frame 14 (elapsed 9): x_min=28, x_max=2 (inverted).
+        # The axis is re-centered on midpoint 15 with the last known width 10.
+        pred_box = cand.predict_box(14)
+        assert pred_box.x_min == 10.0
+        assert pred_box.x_max == 20.0
+        assert pred_box == BoundingBox(10.0, 19.0, 20.0, 29.0)
+
 
 class TestSpatialReidentifier:
     def test_constructor_parameter_validation(self) -> None:

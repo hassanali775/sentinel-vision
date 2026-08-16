@@ -125,6 +125,26 @@ class TestPersistentEntityTracker:
         assert obs1[0].state == EntityState.PREDICTED
         assert obs1[0].bounding_box == box(5, 5, 15, 15)
 
+    def test_predicted_extrapolation_clamps_inverted_axis(self) -> None:
+        tracker = PersistentEntityTracker(
+            occlusion_budget=0, prediction_budget=3, retirement_budget=5
+        )
+        # Frame 0: (10, 10, 20, 20), Frame 1: (16, 10, 22, 20)
+        # Velocity: dx_min=6, dx_max=2 (edges diverge over time).
+        tracker.update(0, [tracked(10, 10, 20, 20, track_id=0)])
+        tracker.update(1, [tracked(16, 10, 22, 20, track_id=0)])
+
+        # Frame 2 (miss 1, step 1): x_min=22, x_max=24 -- still valid.
+        obs2 = tracker.update(2, [])
+        assert obs2[0].state == EntityState.PREDICTED
+        assert obs2[0].bounding_box == box(22, 10, 24, 20)
+
+        # Frame 3 (miss 2, step 2): raw x_min=28, x_max=26 would invert;
+        # axis is re-centered on midpoint 27 keeping last known width 6.
+        obs3 = tracker.update(3, [])
+        assert obs3[0].state == EntityState.PREDICTED
+        assert obs3[0].bounding_box == box(24, 10, 30, 20)
+
     def test_predicted_to_lost_transition_boundary(self) -> None:
         tracker = PersistentEntityTracker(
             occlusion_budget=1, prediction_budget=2, retirement_budget=4

@@ -18,6 +18,39 @@ from sentinel_vision.reidentification.spatial import (
 from sentinel_vision.state.entity import EntityObservation, EntityState
 
 
+def _bounded_prediction_box(
+    last: BoundingBox,
+    velocity: tuple[float, float, float, float],
+    steps: int,
+) -> BoundingBox:
+    """Linearly extrapolate ``last`` by ``steps`` frames of ``velocity``.
+
+    Per-edge finite-difference velocity can invert a box when the edges
+    diverge over a gap (observed on real video with sparse detections). To
+    preserve the box invariant, an axis whose projection would invert is
+    re-centered on the extrapolated midpoint keeping the last known size.
+    """
+    dx_min, dy_min, dx_max, dy_max = velocity
+    x_min = last.x_min + steps * dx_min
+    x_max = last.x_max + steps * dx_max
+    y_min = last.y_min + steps * dy_min
+    y_max = last.y_max + steps * dy_max
+    if x_min >= x_max:
+        mid_x = (x_min + x_max) / 2.0
+        half_width = (last.x_max - last.x_min) / 2.0
+        x_min, x_max = mid_x - half_width, mid_x + half_width
+    if y_min >= y_max:
+        mid_y = (y_min + y_max) / 2.0
+        half_height = (last.y_max - last.y_min) / 2.0
+        y_min, y_max = mid_y - half_height, mid_y + half_height
+    return BoundingBox(
+        x_min=x_min,
+        y_min=y_min,
+        x_max=x_max,
+        y_max=y_max,
+    )
+
+
 @dataclass
 class _EntityRecord:
     entity_id: int
@@ -206,16 +239,13 @@ class PersistentEntityTracker:
                     if frame_delta > 0:
                         last = rec.last_observed_box
                         prev = rec.second_to_last_observed_box
-                        dx_min = (last.x_min - prev.x_min) / frame_delta
-                        dy_min = (last.y_min - prev.y_min) / frame_delta
-                        dx_max = (last.x_max - prev.x_max) / frame_delta
-                        dy_max = (last.y_max - prev.y_max) / frame_delta
-                        box = BoundingBox(
-                            x_min=last.x_min + steps * dx_min,
-                            y_min=last.y_min + steps * dy_min,
-                            x_max=last.x_max + steps * dx_max,
-                            y_max=last.y_max + steps * dy_max,
+                        velocity = (
+                            (last.x_min - prev.x_min) / frame_delta,
+                            (last.y_min - prev.y_min) / frame_delta,
+                            (last.x_max - prev.x_max) / frame_delta,
+                            (last.y_max - prev.y_max) / frame_delta,
                         )
+                        box = _bounded_prediction_box(last, velocity, steps)
                     else:
                         box = rec.last_observed_box
                 else:
