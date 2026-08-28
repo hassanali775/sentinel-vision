@@ -70,3 +70,19 @@ The connected components extraction is deliberately implemented in pure NumPy an
 
 - **DeepSORT / Neural Re-ID Feature Embeddings**: Rejected for PR-007 because synthetic boxes have no visual texture, and adding heavy dependencies (PyTorch/OpenCV) violates the lightweight deterministic testing goal.
 - **Unlimited Candidate Retention**: Rejected because retaining retired entities indefinitely causes unbounded memory growth and increases spatial ambiguity over long streams.
+
+## Addendum: Real-Video Benchmark & Retirement Budget Tradeoff
+
+During PR-011 real-video validation, empirical evidence confirmed that spatial re-identification is architecturally gated behind full entity retirement (`RETIRED` state). 
+
+Because `SpatialReidentifier` only receives candidate pool entries upon an entity reaching `RETIRED`, the `retirement_budget` parameter directly controls re-identification's effective temporal reach. Setting overly conservative budgets (`occlusion=3, prediction=8, retirement=15`) delays candidate population during short-gap boundary exits, allowing raw trackers to mint duplicate entity IDs before re-identification can intervene. 
+
+Tuning the retirement budget represents a real, documented tradeoff between false-positive hazard suppression (re-linking fast re-entries) and premature entity churn (retiring occluded entities too quickly). Production default budgets are updated to `occlusion_budget=2`, `prediction_budget=5`, and `retirement_budget=8` to balance short-gap re-entry recovery with occlusion stability.
+
+## Addendum: Real-Video Benchmark & Retirement Budget Tradeoff
+
+During PR-011 real-video validation, empirical evidence confirmed that spatial re-identification is architecturally gated behind full entity retirement (`RETIRED` state). 
+
+Because `SpatialReidentifier` only receives candidate pool entries upon an entity reaching `RETIRED`, the `retirement_budget` parameter directly controls re-identification's effective temporal reach. Setting overly conservative budgets (`occlusion=3, prediction=8, retirement=15`) delays candidate population during short-gap boundary exits, allowing raw trackers to mint duplicate entity IDs before re-identification can intervene. 
+
+Tuning the retirement budget represents a documented tradeoff between false-positive hazard suppression (re-linking fast re-entries) and premature entity churn (retiring occluded entities too quickly). Empirically, `retirement_budget=8` resolves some but not all short-gap re-entries observed in the test clip (see frame 46 vs. the diagnostic run); the exact threshold is scene-dependent and warrants a parameter sweep in the evaluation chapter, not a single hardcoded default.
