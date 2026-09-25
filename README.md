@@ -64,4 +64,5 @@ pytest
 - [ADR-0008: Spatial Workspace Model](docs/adr/0008-spatial-workspace-model.md)
 - [ADR-0009: Deterministic Event Engine](docs/adr/0009-deterministic-event-engine.md)
 - [ADR-0010: Real Video and Detector Integration](docs/adr/0010-real-video-and-detector-integration.md)
+- [ADR-0011: Active-Entity Spatial Matching](docs/adr/0011-active-entity-spatial-matching.md)
 

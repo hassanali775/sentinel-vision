@@ -24,15 +24,16 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from typing import Any
 
 import cv2
 
-from sentinel_vision.reidentification.spatial import SpatialReidentifier
 from sentinel_vision.detection.yolo import YoloDetector
 from sentinel_vision.events.engine import EventEngine
 from sentinel_vision.events.event import EventStatus
-from sentinel_vision.events.rules import ProximityHazardRule, ZoneIntrusionRule
+from sentinel_vision.events.rules import BaseEventRule, ProximityHazardRule, ZoneIntrusionRule
 from sentinel_vision.ingestion.video import VideoFileFrameProvider
+from sentinel_vision.reidentification.spatial import SpatialReidentifier
 from sentinel_vision.spatial.workspace import WorkspaceModel
 from sentinel_vision.spatial.zone import Zone
 from sentinel_vision.state.tracker import PersistentEntityTracker
@@ -51,8 +52,18 @@ def build_argparser() -> argparse.ArgumentParser:
         default=["person"],
         help="COCO class labels to keep (default: person only)",
     )
-    parser.add_argument("--iou-threshold", type=float, default=0.5, help="GreedyIoUTracker match threshold")
-    parser.add_argument("--tracker-max-age", type=int, default=10, help="Frames a raw track survives unmatched")
+    parser.add_argument(
+        "--iou-threshold",
+        type=float,
+        default=0.5,
+        help="GreedyIoUTracker match threshold",
+    )
+    parser.add_argument(
+        "--tracker-max-age",
+        type=int,
+        default=10,
+        help="Frames a raw track survives unmatched",
+    )
     parser.add_argument("--occlusion-budget", type=int, default=2)
     parser.add_argument("--prediction-budget", type=int, default=5)
     parser.add_argument("--retirement-budget", type=int, default=8)
@@ -98,26 +109,41 @@ def main() -> None:
         confidence_threshold=args.confidence_threshold,
         class_filter=args.class_filter if args.class_filter else None,
     )
-    tracker = GreedyIoUTracker(iou_threshold=args.iou_threshold, max_age=args.tracker_max_age)
+    tracker = GreedyIoUTracker(
+        iou_threshold=args.iou_threshold, max_age=args.tracker_max_age
+    )
     reidentifier = SpatialReidentifier(retention_window=15, max_distance=60.0)
     entity_tracker = PersistentEntityTracker(
-    occlusion_budget=args.occlusion_budget,
-    prediction_budget=args.prediction_budget,
-    retirement_budget=args.retirement_budget,
-    reidentifier=reidentifier,
+        occlusion_budget=args.occlusion_budget,
+        prediction_budget=args.prediction_budget,
+        retirement_budget=args.retirement_budget,
+        reidentifier=reidentifier,
     )
     workspace = WorkspaceModel(zones=zones)
 
-    rules: list[tuple] = [
-        (ProximityHazardRule(threshold_px=args.proximity_threshold_px), args.sustain_frames, args.clear_frames)
+    rules: list[tuple[BaseEventRule[Any], int, int]] = [
+        (
+            ProximityHazardRule(threshold_px=args.proximity_threshold_px),
+            args.sustain_frames,
+            args.clear_frames,
+        )
     ]
     for zone in zones:
-        rules.append((ZoneIntrusionRule(zone_name=zone.name), args.sustain_frames, args.clear_frames))
+        rules.append(
+            (
+                ZoneIntrusionRule(zone_name=zone.name),
+                args.sustain_frames,
+                args.clear_frames,
+            )
+        )
     event_engine = EventEngine(rules)
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # type: ignore[attr-defined]
     writer = cv2.VideoWriter(
-        args.output, fourcc, provider.metadata.fps, (provider.metadata.width, provider.metadata.height)
+        args.output,
+        fourcc,
+        provider.metadata.fps,
+        (provider.metadata.width, provider.metadata.height),
     )
     if not writer.isOpened():
         print(f"Could not open output video for writing: {args.output}", file=sys.stderr)
@@ -127,6 +153,12 @@ def main() -> None:
     frame_count = 0
     failed_frame_count = 0
     total_events_opened = 0
+    # Entity ids are minted monotonically from 0, so the highest id observed
+    # in any frame is the count of distinct entities minted so far. Tracking
+    # this makes the benchmark report duplicate-entity churn (the ADR-0011
+    # failure mode) as a first-class number rather than something only
+    # inferable from the annotated video.
+    total_entities_minted = 0
     start_time = time.time()
 
     print(f"\n[Sentinel Vision] Running real-video pipeline on: {args.input}")
@@ -155,12 +187,20 @@ def main() -> None:
                 for event in events:
                     if event.status is EventStatus.OPEN:
                         total_events_opened += 1
-                        print(f"  [frame {event.opened_frame_id}] OPEN  {event.event_type.value} {event.entity_ids}")
+                        print(
+                            f"  [frame {event.opened_frame_id}] OPEN  "
+                            f"{event.event_type.value} {event.entity_ids}"
+                        )
                     else:
                         print(
                             f"  [frame {event.closed_frame_id}] CLOSE {event.event_type.value} "
                             f"{event.entity_ids} (opened at {event.opened_frame_id})"
                         )
+
+                if observations:
+                    total_entities_minted = max(
+                        total_entities_minted, max(obs.entity_id for obs in observations) + 1
+                    )
 
                 rendered_rgb = render_frame(frame, observations, zones, events)
                 rendered_bgr = cv2.cvtColor(rendered_rgb, cv2.COLOR_RGB2BGR)
@@ -178,6 +218,7 @@ def main() -> None:
     print(f"Failed frames      : {failed_frame_count}")
     print(f"Total wall time    : {total_time:.2f} s")
     print(f"Measured FPS       : {fps:.2f}")
+    print(f"Entities minted    : {total_entities_minted}")
     print(f"Events opened      : {total_events_opened}")
     print(f"Output video       : {args.output}")
     print("==========================================\n")
