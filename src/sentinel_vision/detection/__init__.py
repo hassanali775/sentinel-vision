@@ -10,7 +10,9 @@ docs/adr/0004-detection-abstraction.md.
 __all__ = [
     "BaseDetector",
     "SyntheticBoxDetector",
+    "YoloDetector",
 ]
 
 from sentinel_vision.detection.base import BaseDetector
 from sentinel_vision.detection.synthetic import SyntheticBoxDetector
+from sentinel_vision.detection.yolo import YoloDetector

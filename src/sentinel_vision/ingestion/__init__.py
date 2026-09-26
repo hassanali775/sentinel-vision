@@ -15,6 +15,7 @@ __all__ = [
     "StreamMetadata",
     "SyntheticFrameStream",
     "SyntheticObjectConfig",
+    "VideoFileFrameProvider",
 ]
 
 from sentinel_vision.ingestion.contracts import FrameData, ImageArray, StreamMetadata
@@ -24,4 +25,5 @@ from sentinel_vision.ingestion.stream import (
     SyntheticFrameStream,
     SyntheticObjectConfig,
 )
+from sentinel_vision.ingestion.video import VideoFileFrameProvider
 

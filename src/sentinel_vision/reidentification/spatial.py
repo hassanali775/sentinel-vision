@@ -4,6 +4,12 @@ This module implements ``ReidentificationCandidate`` and ``SpatialReidentifier``
 to re-link newly detected tracks to recently retired entities based on trajectory
 extrapolation (finite-difference velocity) without appearance features or heavy
 dependencies (see docs/adr/0007-spatial-reidentification.md).
+
+``plausibility_score`` is the single shared spatial plausibility rule of the
+re-identification subsystem: it is used both by the RETIRED candidate pool in
+``SpatialReidentifier.match`` and by the active (OCCLUDED/PREDICTED) entity pool
+in ``PersistentEntityTracker`` so both tiers cannot drift apart in their
+thresholds or tie-breaking (see docs/adr/0011-active-entity-spatial-matching.md).
 """
 
 from __future__ import annotations
@@ -13,6 +19,57 @@ from dataclasses import dataclass
 
 from sentinel_vision.data.contracts import BoundingBox, Detection
 from sentinel_vision.evaluation.geometry import iou
+
+
+def plausibility_score(
+    detection_box: BoundingBox,
+    detection_label: str,
+    candidate_box: BoundingBox,
+    candidate_label: str,
+    max_distance: float | None,
+    min_iou: float | None,
+) -> float | None:
+    """Score one detection/candidate pair as a spatially plausible match.
+
+    This is the single shared plausibility rule of the re-identification
+    subsystem. It was extracted verbatim from ``SpatialReidentifier.match`` so
+    that the RETIRED candidate pool and the active (OCCLUDED/PREDICTED) entity
+    pool are scored by exactly the same function with exactly the same
+    thresholds (see docs/adr/0011-active-entity-spatial-matching.md). Two copies
+    of a threshold rule is a class of divergence bug this project has hit before
+    (PR-006/PR-007 velocity normalization), so the rule is written once.
+
+    Returns:
+        The Euclidean distance between the two box centers when the candidate is
+        plausible, else ``None``. The distance doubles as the prediction-error
+        ranking used to disambiguate between multiple plausible candidates
+        (lowest wins), so no separate scoring function is needed.
+
+    A candidate is plausible when:
+    - the class labels are identical, and
+    - ``max_distance`` is ``None`` or the center distance is within it, and
+    - ``min_iou`` is ``None`` or the box overlap is at least it.
+
+    Constraints are compared strictly: a distance exactly equal to
+    ``max_distance`` and an IoU exactly equal to ``min_iou`` both remain
+    plausible, preserving ``SpatialReidentifier.match``'s pre-extraction
+    behavior byte for byte.
+    """
+    if candidate_label != detection_label:
+        return None
+
+    det_cx = (detection_box.x_min + detection_box.x_max) / 2.0
+    det_cy = (detection_box.y_min + detection_box.y_max) / 2.0
+    cand_cx = (candidate_box.x_min + candidate_box.x_max) / 2.0
+    cand_cy = (candidate_box.y_min + candidate_box.y_max) / 2.0
+    dist = math.hypot(det_cx - cand_cx, det_cy - cand_cy)
+    overlap = iou(detection_box, candidate_box)
+
+    if max_distance is not None and dist > max_distance:
+        return None
+    if min_iou is not None and overlap < min_iou:
+        return None
+    return dist
 
 
 @dataclass(frozen=True)
@@ -52,18 +109,38 @@ class ReidentificationCandidate:
             )
 
     def predict_box(self, frame_id: int) -> BoundingBox:
-        """Linearly extrapolate bounding box to ``frame_id`` using velocity."""
+        """Linearly extrapolate bounding box to ``frame_id`` using velocity.
+
+        The projection is clamped so the predicted box can never degenerate:
+        if extrapolating a large frame gap amplifies a per-edge velocity
+        difference enough to invert an axis, the box is re-centered on the
+        extrapolated midpoint while keeping the last known size on that axis
+        (observed on real video where detections arrive sparsely).
+        """
         if frame_id < self.retired_frame_id:
             raise ValueError(
                 f"frame_id ({frame_id}) cannot be before retired_frame_id ({self.retired_frame_id})"
             )
         elapsed = frame_id - self.last_observed_frame_id
         dx_min, dy_min, dx_max, dy_max = self.velocity
+        last = self.last_known_box
+        pred_x_min = last.x_min + elapsed * dx_min
+        pred_x_max = last.x_max + elapsed * dx_max
+        pred_y_min = last.y_min + elapsed * dy_min
+        pred_y_max = last.y_max + elapsed * dy_max
+        if pred_x_min >= pred_x_max:
+            mid_x = (pred_x_min + pred_x_max) / 2.0
+            half_width = (last.x_max - last.x_min) / 2.0
+            pred_x_min, pred_x_max = mid_x - half_width, mid_x + half_width
+        if pred_y_min >= pred_y_max:
+            mid_y = (pred_y_min + pred_y_max) / 2.0
+            half_height = (last.y_max - last.y_min) / 2.0
+            pred_y_min, pred_y_max = mid_y - half_height, mid_y + half_height
         return BoundingBox(
-            x_min=self.last_known_box.x_min + elapsed * dx_min,
-            y_min=self.last_known_box.y_min + elapsed * dy_min,
-            x_max=self.last_known_box.x_max + elapsed * dx_max,
-            y_max=self.last_known_box.y_max + elapsed * dy_max,
+            x_min=pred_x_min,
+            y_min=pred_y_min,
+            x_max=pred_x_max,
+            y_max=pred_y_max,
         )
 
 
@@ -109,6 +186,16 @@ class SpatialReidentifier:
         return self._retention_window
 
     @property
+    def max_distance(self) -> float | None:
+        """Configured center-distance plausibility limit, or ``None`` if unset."""
+        return self._max_distance
+
+    @property
+    def min_iou(self) -> float | None:
+        """Configured minimum-overlap plausibility limit, or ``None`` if unset."""
+        return self._min_iou
+
+    @property
     def candidates(self) -> list[ReidentificationCandidate]:
         return list(self._candidates)
 
@@ -130,33 +217,33 @@ class SpatialReidentifier:
         """Match ``detection`` against retained candidates at ``frame_id``.
 
         Returns the best matching candidate (and removes it from pool) or ``None``.
+
+        The per-candidate plausibility test itself lives in the module-level
+        ``plausibility_score``, which is shared with the active-entity pool in
+        ``PersistentEntityTracker`` (ADR-0011). The candidate's box for
+        ``frame_id`` is its linear extrapolation from ``last_known_box``;
+        ``plausibility_score`` receives that already-extrapolated box.
         """
         self.purge_expired(frame_id)
         if not self._candidates:
             return None
 
         det_box = detection.bounding_box
-        det_cx = (det_box.x_min + det_box.x_max) / 2.0
-        det_cy = (det_box.y_min + det_box.y_max) / 2.0
 
         plausible: list[tuple[float, int, ReidentificationCandidate]] = []
 
         for cand in self._candidates:
-            if cand.class_label != detection.class_label:
+            score = plausibility_score(
+                det_box,
+                detection.class_label,
+                cand.predict_box(frame_id),
+                cand.class_label,
+                self._max_distance,
+                self._min_iou,
+            )
+            if score is None:
                 continue
-
-            pred_box = cand.predict_box(frame_id)
-            pred_cx = (pred_box.x_min + pred_box.x_max) / 2.0
-            pred_cy = (pred_box.y_min + pred_box.y_max) / 2.0
-            dist = math.hypot(det_cx - pred_cx, det_cy - pred_cy)
-            overlap = iou(det_box, pred_box)
-
-            if self._max_distance is not None and dist > self._max_distance:
-                continue
-            if self._min_iou is not None and overlap < self._min_iou:
-                continue
-
-            plausible.append((dist, cand.entity_id, cand))
+            plausible.append((score, cand.entity_id, cand))
 
         if not plausible:
             return None

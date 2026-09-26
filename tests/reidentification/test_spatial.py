@@ -3,7 +3,11 @@
 Covers ``ReidentificationCandidate`` creation and trajectory prediction,
 ``SpatialReidentifier`` threshold matching, rejection, retention window expiry,
 and the mandatory hand-computed multi-candidate spatial disambiguation test.
+Also pins ``SpatialReidentifier.match``'s exact behavior after the
+``plausibility_score`` extraction (ADR-0011).
 """
+
+import math
 
 import pytest
 
@@ -11,6 +15,7 @@ from sentinel_vision.data.contracts import BoundingBox, Detection
 from sentinel_vision.reidentification.spatial import (
     ReidentificationCandidate,
     SpatialReidentifier,
+    plausibility_score,
 )
 
 
@@ -101,6 +106,22 @@ class TestReidentificationCandidate:
         )
         with pytest.raises(ValueError, match="cannot be before"):
             cand.predict_box(4)
+
+    def test_predict_box_clamps_axes_that_would_invert(self) -> None:
+        cand = ReidentificationCandidate(
+            entity_id=1,
+            last_known_box=BoundingBox(10.0, 10.0, 20.0, 20.0),
+            velocity=(2.0, 1.0, -2.0, 1.0),
+            retired_frame_id=5,
+            last_observed_frame_id=5,
+            class_label="synthetic_target",
+        )
+        # Raw projection at frame 14 (elapsed 9): x_min=28, x_max=2 (inverted).
+        # The axis is re-centered on midpoint 15 with the last known width 10.
+        pred_box = cand.predict_box(14)
+        assert pred_box.x_min == 10.0
+        assert pred_box.x_max == 20.0
+        assert pred_box == BoundingBox(10.0, 19.0, 20.0, 29.0)
 
 
 class TestSpatialReidentifier:
@@ -254,3 +275,252 @@ class TestSpatialReidentifier:
         match2 = pool2.match(detection, frame_id=10)
         assert match2 is not None
         assert match2.entity_id == 10  # MUST STILL select Candidate A specifically!
+
+
+class TestPlausibilityScoreExtractionRegression:
+    """ADR-0011 regression guard on the ``plausibility_score`` extraction.
+
+    ``plausibility_score`` was lifted out of ``SpatialReidentifier.match`` so the
+    retired pool and the active-entity pool score candidates with one function.
+    This class pins ``match``'s observable behavior for a fixed set of inputs so
+    the extraction cannot silently change a threshold, a comparison direction, or
+    a tie-break: same inputs must produce the same outputs it produced before the
+    refactor. Every expected value below is hand-computed from the documented
+    rule (class equality, then ``dist > max_distance`` / ``overlap < min_iou``
+    rejection, then lowest ``(dist, entity_id)``).
+    """
+
+    def _candidate(
+        self,
+        entity_id: int,
+        box: BoundingBox,
+        velocity: tuple[float, float, float, float],
+        retired_frame_id: int,
+        last_observed_frame_id: int,
+        class_label: str = "synthetic_target",
+    ) -> ReidentificationCandidate:
+        return ReidentificationCandidate(
+            entity_id=entity_id,
+            last_known_box=box,
+            velocity=velocity,
+            retired_frame_id=retired_frame_id,
+            last_observed_frame_id=last_observed_frame_id,
+            class_label=class_label,
+        )
+
+    @pytest.mark.parametrize(
+        "detection_box, detection_label, candidate_box, candidate_label, "
+        "max_distance, min_iou, expected",
+        [
+            # Class match, no constraints configured: always plausible, and the
+            # score is the raw center distance.
+            (
+                BoundingBox(12.0, 10.0, 22.0, 20.0),
+                "synthetic_target",
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "synthetic_target",
+                None,
+                None,
+                math.hypot(2.0, 0.0),
+            ),
+            # Class mismatch: implausible regardless of geometry or thresholds.
+            (
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "person",
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "synthetic_target",
+                50.0,
+                None,
+                None,
+            ),
+            # Distance exactly equal to max_distance stays plausible (strict >).
+            (
+                BoundingBox(15.0, 10.0, 25.0, 20.0),
+                "synthetic_target",
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "synthetic_target",
+                5.0,
+                None,
+                math.hypot(5.0, 0.0),
+            ),
+            # One pixel past max_distance: rejected.
+            (
+                BoundingBox(15.0, 10.0, 25.0, 20.0),
+                "synthetic_target",
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "synthetic_target",
+                4.9,
+                None,
+                None,
+            ),
+            # Identical boxes: IoU 1.0, meets any min_iou up to 1.0 exactly.
+            (
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "synthetic_target",
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "synthetic_target",
+                None,
+                1.0,
+                0.0,
+            ),
+            # Half-overlap: IoU = 50/150 = 0.3333..., rejected at min_iou 0.5.
+            (
+                BoundingBox(15.0, 10.0, 25.0, 20.0),
+                "synthetic_target",
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "synthetic_target",
+                None,
+                0.5,
+                None,
+            ),
+            # Same pair at min_iou 0.3: plausible, and the score ignores IoU.
+            (
+                BoundingBox(15.0, 10.0, 25.0, 20.0),
+                "synthetic_target",
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "synthetic_target",
+                None,
+                0.3,
+                math.hypot(5.0, 0.0),
+            ),
+            # Both constraints configured: both must hold.
+            (
+                BoundingBox(12.0, 10.0, 22.0, 20.0),
+                "synthetic_target",
+                BoundingBox(10.0, 10.0, 20.0, 20.0),
+                "synthetic_target",
+                50.0,
+                0.3,
+                math.hypot(2.0, 0.0),
+            ),
+        ],
+    )
+    def test_plausibility_score_matches_the_pre_extraction_rule(
+        self,
+        detection_box: BoundingBox,
+        detection_label: str,
+        candidate_box: BoundingBox,
+        candidate_label: str,
+        max_distance: float | None,
+        min_iou: float | None,
+        expected: float | None,
+    ) -> None:
+        assert (
+            plausibility_score(
+                detection_box,
+                detection_label,
+                candidate_box,
+                candidate_label,
+                max_distance,
+                min_iou,
+            )
+            == expected
+        )
+
+    def test_match_behavior_is_unchanged_for_a_fixed_input_table(self) -> None:
+        """``match`` must return exactly what it returned before the extraction."""
+        detection = Detection(
+            bounding_box=BoundingBox(21.0, 11.0, 31.0, 21.0),
+            confidence=1.0,
+            class_label="synthetic_target",
+        )
+        # Candidate A: retired at frame 5, observed at frame 5, moving +2/frame.
+        # At frame 10 its predicted box is (20,10,30,20), center (25,15);
+        # detection center is (26,16) -> prediction error hypot(1,1).
+        cand_a = self._candidate(
+            10, BoundingBox(10.0, 10.0, 20.0, 20.0), (2.0, 0.0, 2.0, 0.0), 5, 5
+        )
+        # Candidate B: static at (100,100,110,110), center (105,105);
+        # distance from the detection center is hypot(79, 89).
+        cand_b = self._candidate(
+            20, BoundingBox(100.0, 100.0, 110.0, 110.0), (0.0, 0.0, 0.0, 0.0), 8, 8
+        )
+
+        # max_distance 2.0: A (error 1.414) matches, B is out of range.
+        tight = SpatialReidentifier(retention_window=20, max_distance=2.0)
+        tight.add_candidate(cand_a)
+        tight.add_candidate(cand_b)
+        matched = tight.match(detection, frame_id=10)
+        assert matched is not None
+        assert matched is cand_a
+        # The winner is removed from the pool; the rejected one is not.
+        assert [c.entity_id for c in tight.candidates] == [20]
+
+        # max_distance 150.0: both plausible, closest error wins, and the score
+        # match reports is exactly the score match ranked on.
+        loose = SpatialReidentifier(retention_window=20, max_distance=150.0)
+        loose.add_candidate(cand_a)
+        loose.add_candidate(cand_b)
+        assert (
+            plausibility_score(
+                detection.bounding_box,
+                detection.class_label,
+                cand_a.predict_box(10),
+                cand_a.class_label,
+                150.0,
+                None,
+            )
+            == math.hypot(1.0, 1.0)
+        )
+        assert (
+            plausibility_score(
+                detection.bounding_box,
+                detection.class_label,
+                cand_b.predict_box(10),
+                cand_b.class_label,
+                150.0,
+                None,
+            )
+            == math.hypot(79.0, 89.0)
+        )
+        matched = loose.match(detection, frame_id=10)
+        assert matched is not None
+        assert matched is cand_a
+        assert [c.entity_id for c in loose.candidates] == [20]
+
+        # No candidate within max_distance at all: None, pool untouched.
+        none_match = SpatialReidentifier(retention_window=20, max_distance=1.0)
+        none_match.add_candidate(cand_a)
+        none_match.add_candidate(cand_b)
+        assert none_match.match(detection, frame_id=10) is None
+        assert [c.entity_id for c in none_match.candidates] == [10, 20]
+
+        # Class mismatch: None even at zero distance, pool untouched.
+        other_class = SpatialReidentifier(retention_window=20, max_distance=150.0)
+        other_class.add_candidate(
+            self._candidate(
+                30,
+                BoundingBox(21.0, 11.0, 31.0, 21.0),
+                (0.0, 0.0, 0.0, 0.0),
+                10,
+                10,
+                class_label="forklift",
+            )
+        )
+        assert other_class.match(detection, frame_id=10) is None
+        assert [c.entity_id for c in other_class.candidates] == [30]
+
+        # min_iou-only configuration keeps working the same way.
+        iou_only = SpatialReidentifier(retention_window=20, max_distance=None, min_iou=0.2)
+        iou_only.add_candidate(
+            self._candidate(
+                40, BoundingBox(21.0, 11.0, 31.0, 21.0), (0.0, 0.0, 0.0, 0.0), 10, 10
+            )
+        )
+        matched = iou_only.match(detection, frame_id=10)
+        assert matched is not None
+        assert matched.entity_id == 40
+        assert len(iou_only.candidates) == 0
+
+    def test_configured_thresholds_are_readable(self) -> None:
+        """The active-entity pool reads the same thresholds match uses."""
+        reidentifier = SpatialReidentifier(
+            retention_window=7, max_distance=12.5, min_iou=0.25
+        )
+        assert reidentifier.retention_window == 7
+        assert reidentifier.max_distance == 12.5
+        assert reidentifier.min_iou == 0.25
+
+        unset = SpatialReidentifier(retention_window=3, max_distance=None, min_iou=0.5)
+        assert unset.max_distance is None
+        assert unset.min_iou == 0.5

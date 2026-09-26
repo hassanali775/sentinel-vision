@@ -8,7 +8,14 @@ version = "0.0.1"
 description = "Visual world-state and event reasoning engine for industrial workspace monitoring and asset intelligence."
 requires-python = ">=3.11"
 readme = "README.md"
-dependencies = ["numpy>=1.24"]
+# ADR-0010: opencv-python (real video ingestion + rendering) and ultralytics
+# (real object detection) are the project's first heavy-dependency
+# exception, replacing the NumPy/stdlib-only ceiling every prior PR kept to.
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "ultralytics>=8.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -32,6 +39,14 @@ python_version = "3.11"
 strict = true
 mypy_path = "src"
 packages = ["sentinel_vision"]
+
+# cv2 (opencv-python) and ultralytics ship no (or incomplete) type stubs.
+# Treat just those imports as untyped rather than weakening strict mode
+# project-wide; the override is scoped to exactly the modules this PR added
+# (ADR-0010).
+[[tool.mypy.overrides]]
+module = ["cv2", "ultralytics"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

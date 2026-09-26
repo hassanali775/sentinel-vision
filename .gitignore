@@ -5,3 +5,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+# Data and Video Artifacts (Local evaluation outputs)
+*.mp4
+*.avi
+*.mov
+data/raw_videos/
+data/output/
