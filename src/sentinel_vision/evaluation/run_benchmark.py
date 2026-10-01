@@ -6,7 +6,7 @@ data shapes, no silent error swallowing:
 
     VideoFileFrameProvider -> YoloDetector -> GreedyIoUTracker
         -> PersistentEntityTracker -> WorkspaceModel -> EventEngine
-        -> render_frame -> cv2.VideoWriter
+        -> IncidentManager -> render_frame -> cv2.VideoWriter
 
 Any per-frame failure is reported loudly (frame id + exception), counted,
 and the frame is skipped with an honest empty-detections fallback for that
@@ -32,6 +32,8 @@ from sentinel_vision.detection.yolo import YoloDetector
 from sentinel_vision.events.engine import EventEngine
 from sentinel_vision.events.event import EventStatus
 from sentinel_vision.events.rules import BaseEventRule, ProximityHazardRule, ZoneIntrusionRule
+from sentinel_vision.incidents.incident import IncidentState
+from sentinel_vision.incidents.manager import IncidentManager
 from sentinel_vision.ingestion.video import VideoFileFrameProvider
 from sentinel_vision.reidentification.spatial import SpatialReidentifier
 from sentinel_vision.spatial.workspace import WorkspaceModel
@@ -77,6 +79,27 @@ def build_argparser() -> argparse.ArgumentParser:
         metavar=("NAME", "X1", "Y1", "X2", "Y2"),
         default=[],
         help="Add a rectangular zone: --zone lane_a 40 0 60 25 (repeatable)",
+    )
+    parser.add_argument(
+        "--guard-response-budget",
+        type=int,
+        default=3,
+        help="Frames a guard-notified incident waits for a response before the alarm "
+        "activates (ADR-0012)",
+    )
+    parser.add_argument(
+        "--escalation-budget",
+        type=int,
+        default=5,
+        help="Frames an alarm-activated incident waits before it escalates (ADR-0012)",
+    )
+    parser.add_argument(
+        "--authorized-ids",
+        nargs="*",
+        type=int,
+        default=[],
+        help="Entity ids treated as known/authorized identities. Default is empty: every "
+        "entity is unauthorized and any open event opens an incident (ADR-0012)",
     )
     return parser
 
@@ -138,6 +161,18 @@ def main() -> None:
         )
     event_engine = EventEngine(rules)
 
+    # ADR-0012: incidents sit between the event engine and the renderer. The
+    # identity whitelist is not implemented yet, so the authorized set is a
+    # hardcoded list of entity ids from the CLI; defaulting to empty makes every
+    # entity unauthorized, which is the honest worst case for a benchmark that
+    # has no roster to check against.
+    authorized_ids = set(args.authorized_ids)
+    incident_manager = IncidentManager(
+        guard_response_budget=args.guard_response_budget,
+        escalation_budget=args.escalation_budget,
+        is_authorized=lambda entity_id: entity_id in authorized_ids,
+    )
+
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # type: ignore[attr-defined]
     writer = cv2.VideoWriter(
         args.output,
@@ -153,6 +188,8 @@ def main() -> None:
     frame_count = 0
     failed_frame_count = 0
     total_events_opened = 0
+    total_incidents_opened = 0
+    total_incident_transitions = 0
     # Entity ids are minted monotonically from 0, so the highest id observed
     # in any frame is the count of distinct entities minted so far. Tracking
     # this makes the benchmark report duplicate-entity churn (the ADR-0011
@@ -164,6 +201,7 @@ def main() -> None:
     print(f"\n[Sentinel Vision] Running real-video pipeline on: {args.input}")
     if zones:
         print(f"Zones: {[z.name for z in zones]}")
+    print(f"Authorized entity ids: {sorted(authorized_ids) or 'none (all unauthorized)'}")
 
     try:
         with provider:
@@ -175,6 +213,7 @@ def main() -> None:
                     observations = entity_tracker.update(frame.frame_id, tracked)
                     spatial = workspace.evaluate(frame.frame_id, observations)
                     events = event_engine.update(frame.frame_id, spatial)
+                    incidents = incident_manager.update(frame.frame_id, events)
                 except Exception as exc:  # noqa: BLE001 — reported loudly, never silent
                     failed_frame_count += 1
                     print(
@@ -182,7 +221,7 @@ def main() -> None:
                         f"{type(exc).__name__}: {exc}",
                         file=sys.stderr,
                     )
-                    observations, events = [], []
+                    observations, events, incidents = [], [], []
 
                 for event in events:
                     if event.status is EventStatus.OPEN:
@@ -196,6 +235,20 @@ def main() -> None:
                             f"  [frame {event.closed_frame_id}] CLOSE {event.event_type.value} "
                             f"{event.entity_ids} (opened at {event.opened_frame_id})"
                         )
+
+                for incident in incidents:
+                    total_incident_transitions += 1
+                    # GUARD_NOTIFIED is reported exactly once per incident, on the
+                    # frame it opens (ADR-0012's synchronous notification), so this
+                    # counts incidents created rather than transitions reported.
+                    if incident.state is IncidentState.GUARD_NOTIFIED:
+                        total_incidents_opened += 1
+                    print(
+                        f"  [frame {frame.frame_id}] INCIDENT #{incident.incident_id} "
+                        f"entity {incident.entity_id} {incident.state.value} "
+                        f"({incident.triggering_event_type.value}, opened at "
+                        f"{incident.opened_frame_id})"
+                    )
 
                 if observations:
                     total_entities_minted = max(
@@ -220,6 +273,8 @@ def main() -> None:
     print(f"Measured FPS       : {fps:.2f}")
     print(f"Entities minted    : {total_entities_minted}")
     print(f"Events opened      : {total_events_opened}")
+    print(f"Incidents opened   : {total_incidents_opened}")
+    print(f"Incident changes   : {total_incident_transitions}")
     print(f"Output video       : {args.output}")
     print("==========================================\n")
 
