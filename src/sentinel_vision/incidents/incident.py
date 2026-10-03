@@ -128,10 +128,15 @@ class Incident:
     - ``responded_frame_id`` and ``alarm_activated_frame_id`` are mutually
       exclusive — an incident is either handled by a guard or escalated, never
       both — and a ``RESOLVED`` incident must record which of the two happened.
-    - Every non-``None`` frame id must be ``>= opened_frame_id``. The bound is
-      ``>=`` and not ``>`` because guard notification happens on the same frame
-      the incident opens (ADR-0012's synchronous-notification simplification),
-      so ``guard_notified_frame_id == opened_frame_id`` is legal and expected.
+    - Frame ids must be non-decreasing along the incident's path, in path
+      order and considering only the fields its state requires:
+      ``opened_frame_id <= guard_notified_frame_id <= (responded_frame_id |
+      alarm_activated_frame_id) <= escalated_frame_id <= resolved_frame_id``.
+      The bounds are ``>=`` and not ``>`` because transitions may legitimately
+      share a frame: guard notification happens on the frame the incident opens
+      (ADR-0012's synchronous-notification simplification), and a guard can
+      respond on the frame they were notified. This check makes an incident
+      unable to claim a transition happened *before* the one preceding it.
     """
 
     incident_id: int
@@ -178,7 +183,8 @@ class Incident:
             )
 
         path = self._transition_path()
-        required = self._required_frame_fields(path)
+        required_in_order = self._required_frame_fields(path)
+        required = set(required_in_order)
         present = {
             name for name in _ALL_FRAME_FIELDS if getattr(self, name) is not None
         }
@@ -192,13 +198,17 @@ class Incident:
                 f"{name} must be None when state is {self.state.name}"
             )
 
-        for name in sorted(required):
+        previous_name = "opened_frame_id"
+        previous_frame_id = self.opened_frame_id
+        for name in required_in_order[1:]:
             frame_id: int = getattr(self, name)
-            if frame_id < self.opened_frame_id:
+            if frame_id < previous_frame_id:
                 raise ValueError(
-                    f"{name} ({frame_id}) must be >= opened_frame_id "
-                    f"({self.opened_frame_id})"
+                    f"{name} ({frame_id}) must be >= {previous_name} "
+                    f"({previous_frame_id})"
                 )
+            previous_name = name
+            previous_frame_id = frame_id
 
     def _transition_path(self) -> tuple[IncidentState, ...]:
         """Return the transition path this incident is on.
@@ -213,17 +223,22 @@ class Incident:
             return _RESPONDED_PATH
         return _ESCALATION_PATH
 
-    def _required_frame_fields(self, path: tuple[IncidentState, ...]) -> set[str]:
-        """Return the frame field names required for the current state on ``path``."""
+    def _required_frame_fields(self, path: tuple[IncidentState, ...]) -> tuple[str, ...]:
+        """Return the frame fields required for the current state, in path order.
+
+        The order matters: it is the order the frame ids must be
+        non-decreasing in, so walking this tuple is what enforces that an
+        incident cannot claim a transition happened before the one preceding it.
+        """
         if self.state not in path:
             # State belongs to the other branch (e.g. ESCALATED on the
             # responded path): report against the branch the state is on, so the
             # error names the frame id that is actually missing.
             path = _ESCALATION_PATH if self.state in _ESCALATION_PATH else _RESPONDED_PATH
         reached = path[: path.index(self.state) + 1]
-        required = {"opened_frame_id"}
+        names = ["opened_frame_id"]
         for reached_state in reached:
             field_name = _FRAME_FIELD_BY_STATE[reached_state]
             if field_name:
-                required.add(field_name)
-        return required
+                names.append(field_name)
+        return tuple(names)

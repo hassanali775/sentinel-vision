@@ -446,6 +446,52 @@ class TestValidation:
         with pytest.raises(ValueError, match="escalation_budget"):
             IncidentManager(2, bad_budget, lambda entity_id: False)
 
+    def test_update_rejects_a_repeated_frame_id(self) -> None:
+        manager = _manager()
+        manager.update(0, [_intrusion(0, 0)])
+        with pytest.raises(
+            ValueError, match=r"frame_id \(0\) must be > last updated frame_id \(0\)"
+        ):
+            manager.update(0, [])
+
+    def test_update_rejects_a_decreasing_frame_id(self) -> None:
+        manager = _manager()
+        manager.update(5, [_intrusion(0, 5)])
+        with pytest.raises(
+            ValueError, match=r"frame_id \(3\) must be > last updated frame_id \(5\)"
+        ):
+            manager.update(3, [])
+
+    def test_hooks_accept_frame_ids_the_ordering_invariant_allows(self) -> None:
+        """Hooks are out-of-band: they are exempt from update's monotonicity.
+
+        A guard action is timestamped by when it was reported, not by the
+        pipeline's frame cursor, so it may carry a frame at or before the last
+        ``update`` — only ``Incident``'s own ordering invariant polices it.
+        """
+        manager = _manager(guard_response_budget=3)
+        manager.update(5, [_intrusion(0, 5)])
+        manager.update(6, [])
+        manager.update(9, [])
+
+        responded = manager.record_response(0, 7)
+        assert responded.state is IncidentState.RESPONDED
+        assert responded.responded_frame_id == 7
+
+        resolved = manager.resolve(0, 7)
+        assert resolved.state is IncidentState.RESOLVED
+        assert resolved.resolved_frame_id == 7
+
+    def test_hook_frame_before_the_notification_is_rejected(self) -> None:
+        manager = _manager(guard_response_budget=10)
+        manager.update(5, [_intrusion(0, 5)])
+
+        with pytest.raises(
+            ValueError,
+            match=r"responded_frame_id \(3\) must be >= guard_notified_frame_id \(5\)",
+        ):
+            manager.record_response(0, 3)
+
     def test_update_rejects_negative_frame_id(self) -> None:
         manager = _manager()
         with pytest.raises(ValueError, match="frame_id"):

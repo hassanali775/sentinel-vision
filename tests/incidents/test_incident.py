@@ -227,16 +227,80 @@ class TestFrameOrdering:
             if name != "opened_frame_id"
         ],
     )
-    def test_reached_frame_field_before_opened_frame_is_rejected(
+    def test_frame_field_before_its_path_predecessor_is_rejected(
         self, state: IncidentState, fields: dict[str, int], name: str
     ) -> None:
+        """Each shape's fields are written in path order, so the predecessor is the prior key."""
+        predecessor = list(fields)[list(fields).index(name) - 1]
+        predecessor_frame_id = fields[predecessor]
         overrides = dict(fields)
-        overrides[name] = 9
+        overrides[name] = predecessor_frame_id - 1
         with pytest.raises(
             ValueError,
-            match=f"{name} \\(9\\) must be >= opened_frame_id \\(10\\)",
+            match=(
+                f"{name} \\({predecessor_frame_id - 1}\\) must be >= "
+                f"{predecessor} \\({predecessor_frame_id}\\)"
+            ),
         ):
             _incident(state, **overrides)
+
+    def test_resolve_before_respond_is_rejected(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="resolved_frame_id \\(8\\) must be >= responded_frame_id \\(10\\)",
+        ):
+            _incident(
+                IncidentState.RESOLVED,
+                opened_frame_id=10,
+                guard_notified_frame_id=10,
+                responded_frame_id=10,
+                resolved_frame_id=8,
+            )
+
+    def test_escalate_before_alarm_is_rejected(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="escalated_frame_id \\(11\\) must be >= alarm_activated_frame_id \\(13\\)",
+        ):
+            _incident(
+                IncidentState.ESCALATED,
+                opened_frame_id=10,
+                guard_notified_frame_id=10,
+                alarm_activated_frame_id=13,
+                escalated_frame_id=11,
+            )
+
+    def test_equal_frame_ids_are_accepted_on_the_responded_path(self) -> None:
+        """Opened, notified, responded and resolved all on one frame is legal."""
+        incident = _incident(
+            IncidentState.RESOLVED,
+            opened_frame_id=10,
+            guard_notified_frame_id=10,
+            responded_frame_id=10,
+            resolved_frame_id=10,
+        )
+        assert incident.opened_frame_id == 10
+        assert incident.responded_frame_id == incident.resolved_frame_id == 10
+
+    def test_equal_frame_ids_are_accepted_on_the_escalation_path(self) -> None:
+        incident = _incident(
+            IncidentState.RESOLVED,
+            opened_frame_id=4,
+            guard_notified_frame_id=4,
+            alarm_activated_frame_id=4,
+            escalated_frame_id=4,
+            resolved_frame_id=4,
+        )
+        assert incident.alarm_activated_frame_id == incident.escalated_frame_id == 4
+
+    def test_respond_on_the_notification_frame_is_accepted(self) -> None:
+        incident = _incident(
+            IncidentState.RESPONDED,
+            opened_frame_id=10,
+            guard_notified_frame_id=10,
+            responded_frame_id=10,
+        )
+        assert incident.responded_frame_id == incident.guard_notified_frame_id
 
     def test_responded_and_alarm_frames_are_mutually_exclusive(self) -> None:
         """A guard response and an alarm escalation are the two branches, not both."""

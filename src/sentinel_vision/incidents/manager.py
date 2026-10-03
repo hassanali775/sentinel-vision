@@ -76,9 +76,17 @@ class IncidentManager:
         self._is_authorized = is_authorized
         self._records: dict[int, _IncidentRecord] = {}
         self._next_incident_id = 0
+        self._last_update_frame_id: int | None = None
 
     def update(self, frame_id: int, events: list[Event]) -> list[Incident]:
         """Advance every active incident to ``frame_id`` with this frame's events.
+
+        Budgets count **processed** frames, so ``frame_id`` must be strictly
+        increasing across calls: replaying or rewinding frames would let a
+        timeout fire twice or not at all, so a ``frame_id`` less than or equal to
+        the previous call's is rejected. The external hooks are deliberately
+        exempt — they are out-of-band human actions, and the ``Incident``
+        ordering invariant is what checks the frame id they are handed.
 
         Returns only the incidents whose state changed on this frame, in
         deterministic order: timeout-driven transitions first, in sorted
@@ -108,6 +116,16 @@ class IncidentManager:
         """
         if frame_id < 0:
             raise ValueError(f"frame_id ({frame_id}) must be non-negative")
+        if (
+            self._last_update_frame_id is not None
+            and frame_id <= self._last_update_frame_id
+        ):
+            raise ValueError(
+                f"update() requires strictly increasing frame_id: frame_id "
+                f"({frame_id}) must be > last updated frame_id "
+                f"({self._last_update_frame_id})"
+            )
+        self._last_update_frame_id = frame_id
 
         changed: list[Incident] = []
 

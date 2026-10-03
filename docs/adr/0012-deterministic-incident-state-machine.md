@@ -68,7 +68,7 @@ Two branch rules fall out of the table and are enforced separately, because each
 
 This mirrors `EntityObservation`'s LOST/`bounding_box` invariant from PR-006: field presence is a function of state, checked both ways, so an incident carrying a response frame without being in `RESPONDED` is rejected at construction rather than silently believed downstream.
 
-Every frame id that exists must be `>= opened_frame_id` — and `>=`, not `>`, deliberately: guard notification happens on the frame the incident opens, so `guard_notified_frame_id == opened_frame_id` is legal and is what the manager produces on every single incident.
+Every frame id that exists must be non-decreasing along the incident's path, in path order and considering only the fields its state requires: `opened_frame_id <= guard_notified_frame_id <= (responded_frame_id | alarm_activated_frame_id) <= escalated_frame_id <= resolved_frame_id`. The bounds are `>=` and not `>` deliberately: guard notification happens on the frame the incident opens, and a guard can respond on the frame they were notified. What the invariant rules out is an incident claiming a transition happened *before* the one preceding it — an incident resolved on frame 8 by a guard who responded on frame 10 records a response that had not happened yet.
 
 `OPEN` is therefore an internal, immediately-superseded state. It exists in the enum because it is where an incident starts, but it never appears in `update()`'s return value: the contract would reject an `OPEN` incident that already carried a notification frame. Callers observe an incident only once it is `GUARD_NOTIFIED`.
 
@@ -77,6 +77,8 @@ Every frame id that exists must be `>= opened_frame_id` — and `>=`, not `>`, d
 Both budgets count **frames since the last transition**, not seconds. An incident opened on frame `F` with `guard_response_budget = B` activates its alarm on frame `F + B` — and never on its own opening frame, because `update()` evaluates timeouts before opening new incidents, so a new incident is not charged for the frame that created it.
 
 Frames are the same unit PR-006 used for entity lifecycle budgets and PR-009 used for event sustain/clear budgets, and for the same reason: determinism (ADR-0001). Replaying the same frames produces the same transitions on the same frame ids, with no dependence on how fast the video decoded, how loaded the machine was, or whether a notification took two seconds or two minutes to arrive. Every incident transition is therefore auditable against a frame id, exactly like every other judgment in the system.
+
+Budgets count **processed** frames, which makes `update()`'s `frame_id` strictly increasing: a repeated or rewound frame is rejected, because replaying frames would let a timeout fire twice or not at all and would make the incident log depend on call history rather than on content. The external hooks are deliberately exempt — a guard action is timestamped by when it was reported, not by the pipeline's frame cursor, so `record_response` and `resolve` accept any frame id the `Incident` ordering invariant allows.
 
 The cost is real and is deferred deliberately: "escalate after 10 seconds" cannot be expressed, and for a stream with variable frame rate, a frame budget is not a fixed duration. Converting budgets to wall-clock requires the frame rate at runtime *and* a delivery model with real latency; both land with the notification work below.
 
