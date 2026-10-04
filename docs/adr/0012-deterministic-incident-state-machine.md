@@ -74,13 +74,15 @@ Every frame id that exists must be non-decreasing along the incident's path, in 
 
 ### 3. Frame Budgets, Not Wall-Clock Timeouts
 
-Both budgets count **frames since the last transition**, not seconds. An incident opened on frame `F` with `guard_response_budget = B` activates its alarm on frame `F + B` — and never on its own opening frame, because `update()` evaluates timeouts before opening new incidents, so a new incident is not charged for the frame that created it.
-
-Frames are the same unit PR-006 used for entity lifecycle budgets and PR-009 used for event sustain/clear budgets, and for the same reason: determinism (ADR-0001). Replaying the same frames produces the same transitions on the same frame ids, with no dependence on how fast the video decoded, how loaded the machine was, or whether a notification took two seconds or two minutes to arrive. Every incident transition is therefore auditable against a frame id, exactly like every other judgment in the system.
-
-Budgets count **processed** frames, which makes `update()`'s `frame_id` strictly increasing: a repeated or rewound frame is rejected, because replaying frames would let a timeout fire twice or not at all and would make the incident log depend on call history rather than on content. The external hooks are deliberately exempt — a guard action is timestamped by when it was reported, not by the pipeline's frame cursor, so `record_response` and `resolve` accept any frame id the `Incident` ordering invariant allows.
-
-The cost is real and is deferred deliberately: "escalate after 10 seconds" cannot be expressed, and for a stream with variable frame rate, a frame budget is not a fixed duration. Converting budgets to wall-clock requires the frame rate at runtime *and* a delivery model with real latency; both land with the notification work below.
+Budgets count `update()` calls, not elapsed frame ids: each call advances every
+active incident's counter by one, so `update()` requires a strictly increasing
+`frame_id` (a repeated or rewound frame would let a timeout fire twice or not at
+all). Gaps are allowed but not free: a skipped frame pauses every clock. An incident
+opened on frame F with budget B alarms on the B-th later call, which is frame F+B
+only when frames are consecutive. The benchmark's failure path is the concrete case
+(a failed frame skips `update()`); subsampled video would require rescaling the
+budgets. The external hooks are exempt: a guard action is timestamped by when it was
+reported, and `Incident`'s ordering invariant polices the frame id they are handed.
 
 ### 4. One Active Incident Per `entity_id`
 
@@ -101,6 +103,18 @@ The whitelist itself is **not** implemented here. `IncidentManager` takes `is_au
 `update()` returns only incidents whose state changed this frame — timeout transitions first in sorted `entity_id` order, then newly opened incidents in event order — mirroring `EventEngine`'s convention exactly. An incident sitting unchanged in `GUARD_NOTIFIED` is never re-emitted, so a consumer's output volume is proportional to what happened rather than to how many incidents are open. `CLOSED` events are ignored: a closing event is not a new hazard.
 
 An incident is deliberately **not** auto-resolved when its triggering event closes. The event ending says the hazard *geometry* ended — the two people moved apart, the person left the zone. It does not say anyone was found, identified, or turned away. Tying resolution to the event would silently mark strangers as handled because they walked out of frame, which is the failure mode this layer exists to prevent. Resolution is explicit and external.
+
+### 7. Known limitation: authorization keys on tracker-minted entity ids
+
+`is_authorized` receives an `entity_id`, and entity ids come from the tracker.
+PR-011 measured that they fragment: 19 ids were minted for the 2 people in
+multi_person_test.mp4, and the benchmark opened 18 incidents. Errors run both ways:
+- Fragmentation: an enrolled person re-minted under a new id looks unknown and
+  triggers a false incident.
+- Identity swap (ADR-0011): a stranger wrongly relinked onto an authorized entity_id
+  inherits that authorization, which is a missed incident (the costliest failure).
+A relink preserves the id; a mint does not. How an entity_id becomes bound to an
+enrolled identity, and measuring authorization continuity, are deferred.
 
 ## Consequences
 
@@ -128,3 +142,4 @@ An incident is deliberately **not** auto-resolved when its triggering event clos
 - **Compound-trigger incidents**: multiple concurrent incidents per `entity_id`, and incidents naming more than one triggering event type.
 - **The whitelist / identity mechanism's actual implementation**: what `is_authorized` resolves against, and how an identity becomes known.
 - **Renderer visualization**: drawing incident state on the annotated video. Deliberately out of scope for this PR, which is scoped to the state machine and its wiring.
+
